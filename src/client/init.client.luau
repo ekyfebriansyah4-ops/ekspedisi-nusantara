@@ -1,9 +1,14 @@
--- Ekspedisi Nusantara: suasana (vibes) tiap area, berjalan di sisi pemain
+-- Ekspedisi Nusantara: client (vibes tiap area + tombol toko)
 local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
 local TweenService = game:GetService("TweenService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local player = Players.LocalPlayer
+
+-- ID produk (samakan dengan server)
+local ID_SKIP_CHECKPOINT = 3727109802
+local ID_SPEED_PASS = 2064818276
 
 -- Pengaturan suasana per area (nama harus sama dengan TEMA di server)
 local VIBES = {
@@ -45,12 +50,13 @@ local warnaLayar = Instance.new("ColorCorrectionEffect")
 warnaLayar.Name = "VibesWarna"
 warnaLayar.Parent = Lighting
 
--- UI judul nama area
+-- UI dasar
 local gui = Instance.new("ScreenGui")
-gui.Name = "NotifArea"
+gui.Name = "UIEkspedisi"
 gui.ResetOnSpawn = false
 gui.Parent = player:WaitForChild("PlayerGui")
 
+-- Judul nama area
 local judul = Instance.new("TextLabel")
 judul.AnchorPoint = Vector2.new(0.5, 0)
 judul.Position = UDim2.fromScale(0.5, 0.12)
@@ -101,7 +107,83 @@ local function ambilArea()
 	return daftar
 end
 
--- Cek posisi pemain secara berkala
+-- ===== Tombol toko =====
+local panelToko = Instance.new("Frame")
+panelToko.AnchorPoint = Vector2.new(0, 0.5)
+panelToko.Position = UDim2.new(0, 16, 0.5, 0)
+panelToko.Size = UDim2.fromOffset(180, 110)
+panelToko.BackgroundTransparency = 1
+panelToko.Parent = gui
+
+local susunan = Instance.new("UIListLayout")
+susunan.Padding = UDim.new(0, 10)
+susunan.Parent = panelToko
+
+local function buatTombol(teks, warna)
+	local tombol = Instance.new("TextButton")
+	tombol.Size = UDim2.new(1, 0, 0, 48)
+	tombol.BackgroundColor3 = warna
+	tombol.Text = teks
+	tombol.TextColor3 = Color3.new(1, 1, 1)
+	tombol.Font = Enum.Font.GothamBold
+	tombol.TextSize = 16
+	local sudut = Instance.new("UICorner")
+	sudut.CornerRadius = UDim.new(0, 12)
+	sudut.Parent = tombol
+	tombol.Parent = panelToko
+	return tombol
+end
+
+local tombolSkip = buatTombol("Lewati Checkpoint", Color3.fromRGB(230, 130, 60))
+local tombolSpeed = buatTombol("Speed Boost", Color3.fromRGB(60, 130, 220))
+
+tombolSkip.MouseButton1Click:Connect(function()
+	if ID_SKIP_CHECKPOINT == 0 then
+		warn("ID Lewati Checkpoint belum diisi")
+		return
+	end
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local stage = leaderstats and leaderstats:FindFirstChild("Stage")
+	if stage and stage.Value >= #ambilArea() then return end -- sudah di checkpoint terakhir
+	MarketplaceService:PromptProductPurchase(player, ID_SKIP_CHECKPOINT)
+end)
+
+tombolSpeed.MouseButton1Click:Connect(function()
+	if ID_SPEED_PASS == 0 then
+		warn("ID Speed Boost belum diisi")
+		return
+	end
+	MarketplaceService:PromptGamePassPurchase(player, ID_SPEED_PASS)
+end)
+
+-- Sembunyikan tombol Speed kalau sudah punya
+local function perbaruiTombolSpeed()
+	tombolSpeed.Visible = not player:GetAttribute("SpeedPass")
+end
+perbaruiTombolSpeed()
+player:GetAttributeChangedSignal("SpeedPass"):Connect(perbaruiTombolSpeed)
+-- Tombol ulang dari awal (muncul saat sudah di puncak)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local eventUlang = ReplicatedStorage:WaitForChild("UlangDariAwal")
+
+local tombolUlang = buatTombol("Ulang dari Awal", Color3.fromRGB(90, 90, 105))
+tombolUlang.Visible = false
+tombolUlang.MouseButton1Click:Connect(function()
+	eventUlang:FireServer()
+end)
+
+task.spawn(function()
+	local stage = player:WaitForChild("leaderstats"):WaitForChild("Stage")
+	local function perbaruiTombol()
+		local total = #ambilArea()
+		local selesai = total > 0 and stage.Value >= total
+		tombolUlang.Visible = selesai
+		tombolSkip.Visible = not selesai -- tidak perlu skip kalau sudah di puncak
+	end
+	perbaruiTombol()
+	stage.Changed:Connect(perbaruiTombol)
+end)
+-- ===== Cek posisi pemain secara berkala (harus paling bawah) =====
 local areaSekarang = nil
 while true do
 	task.wait(0.3)

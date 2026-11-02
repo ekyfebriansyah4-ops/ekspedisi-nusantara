@@ -1,6 +1,18 @@
--- Ekspedisi Nusantara: checkpoint + sungai ban pelampung (prototipe)
+-- Ekspedisi Nusantara: server (checkpoint, sungai, save progres, monetisasi)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local DataStoreService = game:GetService("DataStoreService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local dataProgres = DataStoreService:GetDataStore("ProgresEkspedisi_v1")
+
+-- ID produk dari Creator Hub
+local ID_SKIP_CHECKPOINT = 3727109802
+local ID_SPEED_PASS = 2064818276
+local SPEED_NORMAL = 16
+local SPEED_BOOST = 26
+local TES_SPEED_DI_STUDIO = false  -- [ubah ke true kalau mau tes lagi]
 
 local JARAK_Z = 60          -- jarak antar checkpoint ke depan
 local NAIK_Y = 10           -- kenaikan tinggi tiap checkpoint
@@ -59,7 +71,7 @@ local function buatLabel(part, teks)
 end
 
 -- Sungai arung jeram + ban pelampung untuk 2 pemain
-    local function buatSungai(dari, ke, parent)
+local function buatSungai(dari, ke, parent)
 	local terrain = workspace.Terrain
 	-- Permukaan air disejajarkan dengan grid terrain (kelipatan 4 stud)
 	local yAir = math.floor(dari.Y / 4) * 4
@@ -219,7 +231,7 @@ for i, tema in ipairs(TEMA) do
 	else
 		posisiCP = posisiSebelum + Vector3.new(0, NAIK_Y, JARAK_Z)
 	end
-    	folderArea:SetAttribute("Nama", tema.nama)
+	folderArea:SetAttribute("Nama", tema.nama)
 	folderArea:SetAttribute("BatasZ", posisiCP.Z)
 
 	if tema.jenis == "sungai" then
@@ -233,9 +245,9 @@ for i, tema in ipairs(TEMA) do
 		end
 	end
 
-	-- Checkpoint + tiang penanda
+	-- Checkpoint + tiang penanda (di pojok, supaya tidak menembus karakter)
 	local cp = buatPart("Checkpoint", Vector3.new(14, 1, 14), posisiCP, tema.warna, folderArea)
-	local penanda = buatPart("Penanda", Vector3.new(1, 8, 1), posisiCP + Vector3.new(0, 4.5, 0),
+	local penanda = buatPart("Penanda", Vector3.new(1, 8, 1), posisiCP + Vector3.new(5, 4.5, 5),
 		Color3.fromRGB(255, 170, 0), folderArea)
 	penanda.Material = Enum.Material.Neon
 	penanda.CanCollide = false
@@ -245,7 +257,31 @@ for i, tema in ipairs(TEMA) do
 	posisiSebelum = posisiCP
 end
 
--- Data pemain: stage + respawn di checkpoint terakhir
+-- ===== Data pemain: stage, respawn, kecepatan =====
+local function teleportKeCheckpoint(character, nomor)
+	local cp = checkpoints[nomor]
+	if cp then
+		character:PivotTo(cp.CFrame + Vector3.new(0, 4, 0))
+	end
+end
+
+local function cekSpeedPass(player)
+	if RunService:IsStudio() and TES_SPEED_DI_STUDIO then return false end -- anggap belum punya saat tes
+	if ID_SPEED_PASS == 0 then return false end
+	local ok, punya = pcall(function()
+		return MarketplaceService:UserOwnsGamePassAsync(player.UserId, ID_SPEED_PASS)
+	end)
+	return ok and punya
+end
+
+local function terapkanSpeed(player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = player:GetAttribute("SpeedPass") and SPEED_BOOST or SPEED_NORMAL
+	end
+end
+
 Players.PlayerAdded:Connect(function(player)
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
@@ -256,16 +292,66 @@ Players.PlayerAdded:Connect(function(player)
 	stage.Value = 0
 	stage.Parent = leaderstats
 
-	player.CharacterAdded:Connect(function(character)
-		local cp = checkpoints[stage.Value]
-		if cp then
-			task.wait() -- tunggu karakter siap
-			character:PivotTo(cp.CFrame + Vector3.new(0, 4, 0))
-		end
+	player:GetAttributeChangedSignal("SpeedPass"):Connect(function()
+		terapkanSpeed(player)
 	end)
+
+	player.CharacterAdded:Connect(function(character)
+		character:WaitForChild("Humanoid")
+		task.wait() -- tunggu karakter siap
+		teleportKeCheckpoint(character, stage.Value)
+		terapkanSpeed(player)
+	end)
+
+	-- Muat progres yang tersimpan
+	local berhasil, tersimpan = pcall(function()
+		return dataProgres:GetAsync("pemain_" .. player.UserId)
+	end)
+
+	if berhasil then
+		if typeof(tersimpan) == "number" then
+			stage.Value = math.clamp(tersimpan, 0, #checkpoints)
+			if player.Character then
+				teleportKeCheckpoint(player.Character, stage.Value)
+			end
+		end
+		player:SetAttribute("DataSiap", true)
+	else
+		warn("Gagal memuat progres " .. player.Name .. ": " .. tostring(tersimpan))
+	end
+
+	player:SetAttribute("SpeedPass", cekSpeedPass(player))
 end)
 
--- Deteksi pemain menyentuh checkpoint
+-- Simpan progres saat pemain keluar / server mati
+local function simpanProgres(player)
+	-- Jangan simpan kalau data gagal dimuat, supaya progres lama tidak tertimpa 0
+	if not player:GetAttribute("DataSiap") then return end
+
+	local leaderstats = player:FindFirstChild("leaderstats")
+	local stage = leaderstats and leaderstats:FindFirstChild("Stage")
+	if not stage then return end
+
+	local berhasil, err = pcall(function()
+		dataProgres:SetAsync("pemain_" .. player.UserId, stage.Value)
+	end)
+	if berhasil then
+		print("Progres " .. player.Name .. " tersimpan: Stage " .. stage.Value)
+	else
+		warn("Gagal menyimpan progres " .. player.Name .. ": " .. tostring(err))
+	end
+end
+
+Players.PlayerRemoving:Connect(simpanProgres)
+
+game:BindToClose(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(simpanProgres, player)
+	end
+	task.wait(3) -- beri waktu proses simpan selesai
+end)
+
+-- ===== Checkpoint disentuh =====
 for i, cp in ipairs(checkpoints) do
 	cp.Touched:Connect(function(hit)
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
@@ -278,3 +364,44 @@ for i, cp in ipairs(checkpoints) do
 		end
 	end)
 end
+
+-- ===== Monetisasi =====
+-- Game Pass dibeli saat sedang bermain: langsung aktif
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, dibeli)
+		local simulasiTes = RunService:IsStudio() and TES_SPEED_DI_STUDIO
+	if passId == ID_SPEED_PASS and (dibeli or simulasiTes) then
+		player:SetAttribute("SpeedPass", true)
+	end
+end)
+
+-- Proses pembelian Developer Product
+MarketplaceService.ProcessReceipt = function(receipt)
+	local player = Players:GetPlayerByUserId(receipt.PlayerId)
+	if not player then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	if receipt.ProductId == ID_SKIP_CHECKPOINT then
+		local stage = player.leaderstats.Stage
+		if stage.Value < #checkpoints then
+			stage.Value += 1
+			if player.Character then
+				teleportKeCheckpoint(player.Character, stage.Value)
+			end
+		end
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+
+	return Enum.ProductPurchaseDecision.NotProcessedYet
+end
+
+-- ===== Ulang dari awal =====
+local eventUlang = Instance.new("RemoteEvent")
+eventUlang.Name = "UlangDariAwal"
+eventUlang.Parent = ReplicatedStorage
+
+eventUlang.OnServerEvent:Connect(function(player)
+	local stage = player.leaderstats.Stage
+	stage.Value = 0
+	player:LoadCharacter() -- muncul lagi di titik awal
+end)
